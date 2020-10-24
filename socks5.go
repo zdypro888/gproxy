@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 
 	"github.com/zdypro888/go-socks5"
 	zhttp "github.com/zdypro888/http"
@@ -122,6 +125,31 @@ func dialRemote(ctx context.Context, network, addr string) (net.Conn, error) {
 			return nil, err
 		}
 		return dialer.Dial(network, addr)
+	case "http":
+		conn, err := net.Dial("tcp", addrinfo.Data.Address)
+		if err != nil {
+			return nil, err
+		}
+		hdr := make(http.Header)
+		if addrinfo.Data.UserName != "" {
+			auth := addrinfo.Data.UserName + ":" + addrinfo.Data.Password
+			hdr.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(auth)))
+		}
+		connectReq := &http.Request{
+			Method: "CONNECT",
+			URL:    &url.URL{Opaque: addr},
+			Host:   addr,
+			Header: hdr,
+		}
+		if err = connectReq.Write(conn); err != nil {
+			return nil, err
+		}
+		br := bufio.NewReader(conn)
+		response, err := http.ReadResponse(br, connectReq)
+		if response.StatusCode != 200 {
+			return nil, fmt.Errorf("connect http tunnel faild: %d", response.StatusCode)
+		}
+		return conn, nil
 	}
 
 	return nil, err
