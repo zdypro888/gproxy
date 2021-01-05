@@ -13,7 +13,8 @@ import (
 	"net/url"
 
 	"github.com/zdypro888/go-socks5"
-	zhttp "github.com/zdypro888/http"
+	znet "github.com/zdypro888/net"
+	zhttp "github.com/zdypro888/net/http"
 	netproxy "golang.org/x/net/proxy"
 )
 
@@ -69,11 +70,11 @@ type addressInfo struct {
 }
 
 func getAddress(url string, withNew bool) (*addressInfo, error) {
-	response, err := http.Get(fmt.Sprintf("%s&new=%v", url, withNew))
+	response, err := zhttp.Get(fmt.Sprintf("%s&new=%v", url, withNew))
 	if err != nil {
 		return nil, err
 	}
-	jsonData, err := zhttp.ReadResponse(response)
+	jsonData, err := znet.ReadResponse(response)
 	if err != nil {
 		return nil, err
 	}
