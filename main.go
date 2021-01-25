@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/zdypro888/daemon"
+	"github.com/zdypro888/limit"
 )
 
 const (
@@ -21,6 +22,11 @@ func main() {
 		log.Printf("读取配置错误: %v", err)
 		Config.Save()
 	}
+	var err error
+	if err = limit.Limit(); err != nil {
+		log.Printf("limit error: %v", err)
+	}
+	startUSBMuxd()
 	startProxy()
 	daemon.WaitNotify()
 }

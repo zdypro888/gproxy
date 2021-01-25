@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"strings"
-	"sync"
 
 	"github.com/zdypro888/go-socks5"
+	"github.com/zdypro888/usbmuxd"
+	"golang.org/x/net/proxy"
 )
 
 //StaticBoolCredentials 认证通过
@@ -49,58 +49,6 @@ func commands(commands string) (bool, bool, bool, bool) {
 	return auto, must, change, lock
 }
 
-var outgoingLock sync.Mutex
-var outgoingCount int
-var outgoingLocking bool
-
-func outLock(lock bool) error {
-	outgoingLock.Lock()
-	defer outgoingLock.Unlock()
-	if outgoingLocking {
-		return errors.New("outgoing tunnel is locking")
-	}
-	if lock {
-		if outgoingCount > 0 {
-			return fmt.Errorf("outgoing has client: %d", outgoingCount)
-		}
-		outgoingLocking = true
-	}
-	outgoingCount++
-	return nil
-}
-
-func outUnlock() {
-	outgoingLock.Lock()
-	defer outgoingLock.Unlock()
-	outgoingLocking = false
-	outgoingCount--
-}
-
-type outgoingConn struct {
-	net.Conn
-	Change bool
-}
-
-//Close 关闭
-func (conn *outgoingConn) Close() error {
-	if conn.Change {
-		go changeIP()
-	} else {
-		outUnlock()
-	}
-	return conn.Conn.Close()
-}
-
-var localChangeIP func()
-
-func changeIP() {
-	//更换IP
-	if localChangeIP != nil {
-		localChangeIP()
-	}
-	outUnlock()
-}
-
 func dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	request := ctx.Value(contextKey("request")).(*socks5.Request)
 	username := request.AuthContext.Payload["username"]
@@ -109,18 +57,70 @@ func dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	auto, must, change, lock := commands(password)
 	if auto || must {
 		//应该是 switch 进程
-	} else {
-		if err := outLock(lock); err != nil {
-			return nil, err
+		if iControler.DeviceCount == 0 {
+			return nil, errors.New("device not found(none)")
 		}
-		conn, err := net.Dial(network, addr)
+		var minDevice *usbmuxd.USBDevice
+		iControler.Devices.Range(func(key, value interface{}) bool {
+			device := value.(*usbmuxd.USBDevice)
+			if device.Pluged {
+				deviceLck := device.Object.(*locker)
+				if err := deviceLck.Lock(lock); err == nil {
+					if minDevice == nil {
+						minDevice = device
+						if lock {
+							return false
+						}
+					} else {
+						minLocker := minDevice.Object.(*locker)
+						if minLocker.Count > deviceLck.Count {
+							minLocker.Unlock()
+							minDevice = device
+						} else {
+							deviceLck.Unlock()
+						}
+					}
+				}
+			}
+			return true
+		})
+		if minDevice == nil {
+			return nil, errors.New("device not found(busy)")
+		}
+		deviceLocker := minDevice.Object.(*locker)
+		var devicePass []string
+		if change {
+			devicePass = append(devicePass, "change")
+		}
+		if lock {
+			devicePass = append(devicePass, "lock")
+		}
+		dialer, err := proxy.SOCKS5("usbmuxd", "1080", &proxy.Auth{User: username, Password: strings.Join(devicePass, "-")}, &dialerTimeout{DialTimeout: minDevice.DialTimeout})
 		if err != nil {
-			outUnlock()
+			deviceLocker.Unlock()
 			return nil, err
 		}
-		return &outgoingConn{Conn: conn, Change: change}, nil
+		conn, err := dialer.Dial(network, addr)
+		if err != nil {
+			deviceLocker.Unlock()
+			return nil, err
+		}
+		out := &outgoingConn{Conn: conn, Locker: deviceLocker}
+		return out, nil
 	}
-	return nil, nil
+	if err := outgoing.Lock(lock); err != nil {
+		return nil, err
+	}
+	conn, err := net.Dial(network, addr)
+	if err != nil {
+		outgoing.Unlock()
+		return nil, err
+	}
+	out := &outgoingConn{Conn: conn, Locker: &outgoing}
+	if change {
+		out.Change = localChangeIP
+	}
+	return out, nil
 }
 
 //startProxy 开启代理
